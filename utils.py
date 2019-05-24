@@ -4,6 +4,7 @@ import numpy as np
 import torch
 from path import Path
 import datetime
+import os
 from collections import OrderedDict
 from matplotlib import cm
 from matplotlib.colors import ListedColormap, LinearSegmentedColormap
@@ -101,8 +102,11 @@ def save_checkpoint(save_path, dispnet_state, exp_pose_state, is_best, filename=
     file_prefixes = ['dispnet', 'exp_pose']
     states = [dispnet_state, exp_pose_state]
     for (prefix, state) in zip(file_prefixes, states):
-        torch.save(state, save_path/'{}_{}'.format(prefix,filename))
+        torch.save(state, save_path/'{}_epoch:{}_{}'.format(prefix,state['epoch'], filename))
+        if state['epoch'] > 1:
+            os.remove(save_path/'{}_epoch:{}_{}'.format(prefix,state['epoch']-1, filename))
 
     if is_best:
         for prefix in file_prefixes:
-            shutil.copyfile(save_path/'{}_{}'.format(prefix,filename), save_path/'{}_model_best.pth.tar'.format(prefix))
+            shutil.copyfile(save_path/'{}_epoch:{}_{}'.format(prefix,dispnet_state['epoch'], filename),
+                            save_path/'{}_epoch:{}_model_best.pth.tar'.format(prefix, dispnet_state['epoch']))
