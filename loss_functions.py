@@ -5,7 +5,7 @@ import torch.nn.functional as F
 from inverse_warp import inverse_warp
 
 
-def photometric_reconstruction_loss(tgt_img, ref_imgs, intrinsics,
+def photometric_reconstruction_loss(args, tgt_img, ref_imgs, intrinsics,
                                     depth, explainability_mask, pose,
                                     rotation_mode='euler', padding_mode='zeros'):
     def one_scale(depth, explainability_mask):
@@ -22,7 +22,7 @@ def photometric_reconstruction_loss(tgt_img, ref_imgs, intrinsics,
 
         warped_imgs = []
         diff_maps = []
-
+        diff_list = []
         for i, ref_img in enumerate(ref_imgs_scaled):
             current_pose = pose[:, i]
 
@@ -33,13 +33,19 @@ def photometric_reconstruction_loss(tgt_img, ref_imgs, intrinsics,
 
             if explainability_mask is not None:
                 diff = diff * explainability_mask[:,i:i+1].expand_as(diff)
-
-            reconstruction_loss += diff.abs().mean()
-            assert((reconstruction_loss == reconstruction_loss).item() == 1)
+            if args.avg_loss:
+                reconstruction_loss += diff.abs().mean()
+                assert((reconstruction_loss == reconstruction_loss).item() == 1)
+            else:
+                diff_list.append(diff)
 
             warped_imgs.append(ref_img_warped[0])
             diff_maps.append(diff[0])
-
+        # 选取前后参考图像重建的最小值作为重建误差,而不是直接是和的平均值
+        if not args.avg_loss:
+            reconstruction_loss, _ = torch.cat(diff_list, dim=1).abs().min(dim=1)
+            reconstruction_loss = reconstruction_loss.mean()
+            assert ((reconstruction_loss == reconstruction_loss).item() == 1)
         return reconstruction_loss, warped_imgs, diff_maps
 
     warped_results, diff_results = [], []
