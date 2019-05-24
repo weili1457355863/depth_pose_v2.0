@@ -7,23 +7,23 @@ import torch
 import torch.backends.cudnn as cudnn
 import torch.optim
 import torch.utils.data
+from tensorboardX import SummaryWriter
+
 import custom_transforms
 import models
 from utils import tensor2array, save_checkpoint, save_path_formatter, log_output_tensorboard
-from inverse_warp import inverse_warp
-
 from loss_functions import photometric_reconstruction_loss, explainability_loss, smooth_loss, compute_errors
 from logger import TermLogger, AverageMeter
-from tensorboardX import SummaryWriter
+from datasets.sequence_folders import SequenceFolder
 
 parser = argparse.ArgumentParser(description='Structure from Motion Learner training on KITTI and CityScapes Dataset',
                                  formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
-parser.add_argument('data', metavar='DIR',
-                    help='path to dataset')
-parser.add_argument('--dataset-format', default='sequential', metavar='STR',
-                    help='dataset format, stacked: stacked frames (from original TensorFlow code) \
-                    sequential: sequential folders (easier to convert to with a non KITTI/Cityscape dataset')
+parser.add_argument('data', metavar='DIR', help='path to dataset')
+parser.add_argument('--pretrained-disp', dest='pretrained_disp', default=None, metavar='PATH',
+                    help='path to pre-trained dispnet model')
+parser.add_argument('--pretrained-exppose', dest='pretrained_exp_pose', default=None, metavar='PATH',
+                    help='path to pre-trained Exp Pose net model')
 parser.add_argument('--sequence-length', type=int, metavar='N', help='sequence length for training', default=3)
 parser.add_argument('--rotation-mode', type=str, choices=['euler', 'quat'], default='euler',
                     help='rotation mode for PoseExpnet : euler (yaw,pitch,roll) or quaternion (last 3 coefficients)')
@@ -49,25 +49,25 @@ parser.add_argument('--beta', default=0.999, type=float, metavar='M',
                     help='beta parameters for adam')
 parser.add_argument('--weight-decay', '--wd', default=0, type=float,
                     metavar='W', help='weight decay')
-parser.add_argument('--print-freq', default=10, type=int,
-                    metavar='N', help='print frequency')
-parser.add_argument('-e', '--evaluate', dest='evaluate', action='store_true',
-                    help='evaluate model on validation set')
-parser.add_argument('--pretrained-disp', dest='pretrained_disp', default=None, metavar='PATH',
-                    help='path to pre-trained dispnet model')
-parser.add_argument('--pretrained-exppose', dest='pretrained_exp_pose', default=None, metavar='PATH',
-                    help='path to pre-trained Exp Pose net model')
+parser.add_argument('-p', '--photo-loss-weight', type=float, help='weight for photometric loss', metavar='W', default=1)
+parser.add_argument('-m', '--mask-loss-weight', type=float, help='weight for explainabilty mask loss', metavar='W', default=0)
+parser.add_argument('-s', '--smooth-loss-weight', type=float, help='weight for disparity smoothness loss', metavar='W', default=0.1)
 parser.add_argument('--seed', default=0, type=int, help='seed for random functions, and network initialization')
+
 parser.add_argument('--log-summary', default='progress_log_summary.csv', metavar='PATH',
                     help='csv where to save per-epoch train and valid stats')
 parser.add_argument('--log-full', default='progress_log_full.csv', metavar='PATH',
                     help='csv where to save per-gradient descent train stats')
-parser.add_argument('-p', '--photo-loss-weight', type=float, help='weight for photometric loss', metavar='W', default=1)
-parser.add_argument('-m', '--mask-loss-weight', type=float, help='weight for explainabilty mask loss', metavar='W', default=0)
-parser.add_argument('-s', '--smooth-loss-weight', type=float, help='weight for disparity smoothness loss', metavar='W', default=0.1)
+parser.add_argument('--print-freq', default=10, type=int,
+                    metavar='N', help='print frequency')
+parser.add_argument('-e', '--evaluate', dest='evaluate', action='store_true',
+                    help='only evaluate model on validation set, do not train')
 parser.add_argument('--log-output', action='store_true', help='will log dispnet outputs and warped imgs at validation step')
 parser.add_argument('-f', '--training-output-freq', type=int, help='frequence for outputting dispnet outputs and warped imgs at training for all scales if 0 will not output',
                     metavar='N', default=0)
+
+# add some improvement
+parser.add_argument('--avg-loss', action='store_true', help='use average phototmetric of minus photometric')
 
 best_error = -1
 n_iter = 0
@@ -77,10 +77,6 @@ device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cp
 def main():
     global best_error, n_iter, device
     args = parser.parse_args()
-    if args.dataset_format == 'stacked':
-        from datasets.stacked_sequence_folders import SequenceFolder
-    elif args.dataset_format == 'sequential':
-        from datasets.sequence_folders import SequenceFolder
     save_path = save_path_formatter(args, parser)
     args.save_path = 'checkpoints'/save_path
     print('=> will save everything to {}'.format(args.save_path))
@@ -275,7 +271,7 @@ def train(args, train_loader, disp_net, pose_exp_net, optimizer, epoch_size, log
         depth = [1/disp for disp in disparities]
         explainability_mask, pose = pose_exp_net(tgt_img, ref_imgs)
 
-        loss_1, warped, diff = photometric_reconstruction_loss(tgt_img, ref_imgs, intrinsics,
+        loss_1, warped, diff = photometric_reconstruction_loss(args,tgt_img, ref_imgs, intrinsics,
                                                                depth, explainability_mask, pose,
                                                                args.rotation_mode, args.padding_mode)
         if w2 > 0:
